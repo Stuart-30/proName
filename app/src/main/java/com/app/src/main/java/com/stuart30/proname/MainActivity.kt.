@@ -1,0 +1,310 @@
+package com.stuart30.proname
+
+import android.content.Intent
+import android.net.Uri
+import android.os.Bundle
+import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
+import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
+import androidx.compose.foundation.layout.Arrangement
+import androidx.compose.foundation.layout.Column
+import androidx.compose.foundation.layout.Row
+import androidx.compose.foundation.layout.Spacer
+import androidx.compose.foundation.layout.fillMaxSize
+import androidx.compose.foundation.layout.fillMaxWidth
+import androidx.compose.foundation.layout.height
+import androidx.compose.foundation.layout.padding
+import androidx.compose.foundation.layout.weight
+import androidx.compose.foundation.lazy.LazyColumn
+import androidx.compose.foundation.lazy.items
+import androidx.compose.material3.AlertDialog
+import androidx.compose.material3.Button
+import androidx.compose.material3.Checkbox
+import androidx.compose.material3.MaterialTheme
+import androidx.compose.material3.OutlinedTextField
+import androidx.compose.material3.Surface
+import androidx.compose.material3.Text
+import androidx.compose.material3.TextButton
+import androidx.compose.runtime.Composable
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.mutableStateListOf
+import androidx.compose.runtime.mutableStateOf
+import androidx.compose.runtime.remember
+import androidx.compose.runtime.setValue
+import androidx.compose.ui.Modifier
+import androidx.compose.ui.platform.LocalContext
+import androidx.compose.ui.unit.dp
+import androidx.documentfile.provider.DocumentFile
+
+class MainActivity : ComponentActivity() {
+    override fun onCreate(savedInstanceState: Bundle?) {
+        super.onCreate(savedInstanceState)
+        setContent {
+            MaterialTheme {
+                Surface(modifier = Modifier.fillMaxSize()) {
+                    RenombradorScreen()
+                }
+            }
+        }
+    }
+}
+
+@Composable
+fun RenombradorScreen() {
+    val context = LocalContext.current
+    var carpeta by remember { mutableStateOf<DocumentFile?>(null) }
+    var archivos by remember { mutableStateOf<List<DocumentFile>>(emptyList()) }
+    val reglas = remember { mutableStateListOf<Regla>() }
+    var mostrarDialogo by remember { mutableStateOf(false) }
+    var mensaje by remember { mutableStateOf("") }
+
+    val selectorCarpeta = rememberLauncherForActivityResult(
+        ActivityResultContracts.OpenDocumentTree()
+    ) { uri: Uri? ->
+        if (uri != null) {
+            context.contentResolver.takePersistableUriPermission(
+                uri,
+                Intent.FLAG_GRANT_READ_URI_PERMISSION or Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+            )
+            val c = DocumentFile.fromTreeUri(context, uri)
+            carpeta = c
+            archivos = c?.listFiles()
+                ?.filter { it.isFile && it.name != null }
+                ?.sortedBy { it.name }
+                ?: emptyList()
+            mensaje = ""
+        }
+    }
+
+    // Nombres nuevos calculados con las reglas actuales
+    val nuevos = archivos.mapIndexed { i, f ->
+        aplicarReglas(f.name ?: "", reglas.toList(), i)
+    }
+    val existentes = archivos.mapNotNull { it.name }.toSet()
+    val duplicados = detectarConflictos(nuevos)
+
+    fun esConflicto(i: Int): Boolean {
+        val nuevo = nuevos[i]
+        val original = archivos[i].name ?: ""
+        return nuevo.isBlank() ||
+            nuevo in duplicados ||
+            (nuevo != original && nuevo in existentes)
+    }
+
+    val cambios = archivos.indices.count { nuevos[it] != archivos[it].name }
+    val hayConflictos = archivos.indices.any { esConflicto(it) }
+
+    if (mostrarDialogo) {
+        AgregarReglaDialogo(
+            onAgregar = {
+                reglas.add(it)
+                mostrarDialogo = false
+            },
+            onCerrar = { mostrarDialogo = false }
+        )
+    }
+
+    Column(modifier = Modifier.fillMaxSize().padding(16.dp)) {
+        Text("Renombrador", style = MaterialTheme.typography.headlineSmall)
+
+        Button(
+            onClick = { selectorCarpeta.launch(null) },
+            modifier = Modifier.padding(top = 12.dp)
+        ) {
+            Text("Elegir carpeta")
+        }
+
+        Text(
+            text = carpeta?.name ?: "Ninguna carpeta elegida",
+            modifier = Modifier.padding(top = 8.dp)
+        )
+
+        Row(
+            modifier = Modifier.padding(top = 12.dp),
+            horizontalArrangement = Arrangement.spacedBy(8.dp)
+        ) {
+            Text("Reglas (${reglas.size})", style = MaterialTheme.typography.titleMedium)
+            TextButton(onClick = { mostrarDialogo = true }) { Text("+ Agregar regla") }
+        }
+
+        reglas.forEachIndexed { i, regla ->
+            Row {
+                Text(
+                    text = "${i + 1}. ${descripcion(regla)}",
+                    modifier = Modifier.weight(1f).padding(top = 8.dp)
+                )
+                TextButton(onClick = { reglas.removeAt(i) }) { Text("Quitar") }
+            }
+        }
+
+        Text(
+            text = if (archivos.isEmpty()) "" else "${archivos.size} archivos · $cambios cambiarán" +
+                if (hayConflictos) " · hay conflictos" else "",
+            modifier = Modifier.padding(top = 12.dp)
+        )
+
+        LazyColumn(modifier = Modifier.weight(1f).padding(top = 8.dp)) {
+            items(archivos.size) { i ->
+                Column(modifier = Modifier.padding(vertical = 6.dp)) {
+                    Text(text = archivos[i].name ?: "")
+                    Text(text = "→ ${nuevos[i]}", style = MaterialTheme.typography.titleSmall)
+                    if (esConflicto(i)) {
+                        Text(
+                            text = "Conflicto: no se renombrará",
+                            color = MaterialTheme.colorScheme.error
+                        )
+                    }
+                }
+            }
+        }
+
+        if (mensaje.isNotEmpty()) {
+            Text(text = mensaje, modifier = Modifier.padding(bottom = 8.dp))
+        }
+
+        Button(
+            onClick = {
+                var ok = 0
+                var fallos = 0
+                archivos.forEachIndexed { i, f ->
+                    val nuevo = nuevos[i]
+                    if (nuevo != f.name && !esConflicto(i)) {
+                        if (f.renameTo(nuevo)) ok++ else fallos++
+                    }
+                }
+                archivos = carpeta?.listFiles()
+                    ?.filter { it.isFile && it.name != null }
+                    ?.sortedBy { it.name }
+                    ?: emptyList()
+                mensaje = "Renombrados: $ok. Fallos: $fallos."
+            },
+            enabled = carpeta != null && cambios > 0 && !hayConflictos,
+            modifier = Modifier.fillMaxWidth()
+        ) {
+            Text("Renombrar archivos")
+        }
+    }
+}
+
+fun descripcion(r: Regla): String = when (r) {
+    is BuscarReemplazar -> "Buscar \"${r.buscar}\" → \"${r.reemplazo}\"" + if (r.regex) " (regex)" else ""
+    is Prefijo -> "Prefijo \"${r.texto}\""
+    is Sufijo -> "Sufijo \"${r.texto}\""
+    is Numerar -> "Numerar desde ${r.inicio} con ${r.cifras} cifras"
+    is CambiarMayusculas -> "Mayúsculas: ${etiquetaModo(r.modo)}"
+    is QuitarTexto -> "Quitar \"${r.texto}\""
+    is RecortarCaracteres -> "Recortar ${r.inicio} al inicio y ${r.fin} al final"
+    is ReemplazarEspacios -> "Espacios → \"${r.por}\""
+    is LimpiarEspacios -> "Limpiar espacios sobrantes"
+}
+
+fun etiquetaModo(m: Modo): String = when (m) {
+    Modo.MINUSCULAS -> "minúsculas"
+    Modo.MAYUSCULAS -> "MAYÚSCULAS"
+    Modo.PRIMERA_LETRA -> "primera letra"
+    Modo.CADA_PALABRA -> "Cada Palabra"
+}
+
+@Composable
+fun AgregarReglaDialogo(onAgregar: (Regla) -> Unit, onCerrar: () -> Unit) {
+    var tipo by remember { mutableStateOf(0) }
+    var a by remember { mutableStateOf("") }
+    var b by remember { mutableStateOf("") }
+    var c by remember { mutableStateOf(" - ") }
+    var regex by remember { mutableStateOf(false) }
+    var modo by remember { mutableStateOf(Modo.PRIMERA_LETRA) }
+
+    val tipos = listOf(
+        "Buscar y reemplazar", "Agregar prefijo", "Agregar sufijo", "Numeración secuencial",
+        "Cambiar mayúsculas", "Quitar texto", "Recortar caracteres", "Reemplazar espacios",
+        "Limpiar espacios"
+    )
+
+    AlertDialog(
+        onDismissRequest = onCerrar,
+        title = { Text("Agregar regla") },
+        text = {
+            Column(verticalArrangement = Arrangement.spacedBy(4.dp)) {
+                tipos.forEachIndexed { i, nombre ->
+                    TextButton(onClick = { tipo = i }) {
+                        Text((if (i == tipo) "● " else "○ ") + nombre)
+                    }
+                }
+                Spacer(modifier = Modifier.height(8.dp))
+
+                when (tipo) {
+                    0 -> {
+                        OutlinedTextField(
+                            value = a, onValueChange = { a = it },
+                            label = { Text("Buscar") }
+                        )
+                        OutlinedTextField(
+                            value = b, onValueChange = { b = it },
+                            label = { Text("Reemplazar por") }
+                        )
+                        Row {
+                            Checkbox(checked = regex, onCheckedChange = { regex = it })
+                            Text("Usar regex", modifier = Modifier.padding(top = 12.dp))
+                        }
+                    }
+                    1, 2, 5, 7 -> OutlinedTextField(
+                        value = a, onValueChange = { a = it },
+                        label = { Text("Texto") }
+                    )
+                    3 -> {
+                        OutlinedTextField(
+                            value = a, onValueChange = { a = it },
+                            label = { Text("Número inicial (ej. 1)") }
+                        )
+                        OutlinedTextField(
+                            value = b, onValueChange = { b = it },
+                            label = { Text("Cifras (ej. 2)") }
+                        )
+                        OutlinedTextField(
+                            value = c, onValueChange = { c = it },
+                            label = { Text("Separador") }
+                        )
+                    }
+                    4 -> {
+                        Modo.entries.forEach { m ->
+                            TextButton(onClick = { modo = m }) {
+                                Text((if (m == modo) "● " else "○ ") + etiquetaModo(m))
+                            }
+                        }
+                    }
+                    6 -> {
+                        OutlinedTextField(
+                            value = a, onValueChange = { a = it },
+                            label = { Text("Quitar al inicio (caracteres)") }
+                        )
+                        OutlinedTextField(
+                            value = b, onValueChange = { b = it },
+                            label = { Text("Quitar al final (caracteres)") }
+                        )
+                    }
+                    else -> Text("Quita espacios al inicio y al final, y dobles espacios.")
+                }
+            }
+        },
+        confirmButton = {
+            TextButton(onClick = {
+                val regla: Regla = when (tipo) {
+                    0 -> BuscarReemplazar(a, b, regex)
+                    1 -> Prefijo(a)
+                    2 -> Sufijo(a)
+                    3 -> Numerar(a.toIntOrNull() ?: 1, b.toIntOrNull() ?: 2, c)
+                    4 -> CambiarMayusculas(modo)
+                    5 -> QuitarTexto(a)
+                    6 -> RecortarCaracteres(a.toIntOrNull() ?: 0, b.toIntOrNull() ?: 0)
+                    7 -> ReemplazarEspacios(a)
+                    else -> LimpiarEspacios
+                }
+                onAgregar(regla)
+            }) { Text("Agregar") }
+        },
+        dismissButton = {
+            TextButton(onClick = onCerrar) { Text("Cancelar") }
+        }
+    )
+}
