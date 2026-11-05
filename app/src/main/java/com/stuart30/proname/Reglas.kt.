@@ -1,0 +1,85 @@
+package com.stuart30.proname
+
+enum class Modo { MINUSCULAS, MAYUSCULAS, PRIMERA_LETRA, CADA_PALABRA }
+
+sealed interface Regla {
+    // base = nombre sin extensión; indice = posición del archivo en la lista
+    fun aplicar(base: String, indice: Int): String
+}
+
+data class BuscarReemplazar(val buscar: String, val reemplazo: String, val regex: Boolean) : Regla {
+    override fun aplicar(base: String, indice: Int): String {
+        if (buscar.isEmpty()) return base
+        return if (regex) {
+            try {
+                Regex(buscar).replace(base, reemplazo)
+            } catch (e: Exception) {
+                base // expresión inválida: no cambia el nombre
+            }
+        } else {
+            base.replace(buscar, reemplazo)
+        }
+    }
+}
+
+data class Prefijo(val texto: String) : Regla {
+    override fun aplicar(base: String, indice: Int) = texto + base
+}
+
+data class Sufijo(val texto: String) : Regla {
+    override fun aplicar(base: String, indice: Int) = base + texto
+}
+
+data class QuitarTexto(val texto: String) : Regla {
+    override fun aplicar(base: String, indice: Int): String {
+        if (texto.isEmpty()) return base
+        return base.replace(texto, "")
+    }
+}
+
+data class RecortarCaracteres(val inicio: Int, val fin: Int) : Regla {
+    override fun aplicar(base: String, indice: Int): String =
+        base.drop(inicio.coerceAtLeast(0)).dropLast(fin.coerceAtLeast(0))
+}
+
+data class ReemplazarEspacios(val por: String) : Regla {
+    override fun aplicar(base: String, indice: Int) = base.replace(" ", por)
+}
+
+data object LimpiarEspacios : Regla {
+    override fun aplicar(base: String, indice: Int) = base.trim().replace(Regex("\\s+"), " ")
+}
+
+data class CambiarMayusculas(val modo: Modo) : Regla {
+    override fun aplicar(base: String, indice: Int): String = when (modo) {
+        Modo.MINUSCULAS -> base.lowercase()
+        Modo.MAYUSCULAS -> base.uppercase()
+        Modo.PRIMERA_LETRA -> base.lowercase().replaceFirstChar { it.uppercaseChar() }
+        Modo.CADA_PALABRA -> base.lowercase()
+            .split(" ")
+            .joinToString(" ") { palabra -> palabra.replaceFirstChar { it.uppercaseChar() } }
+    }
+}
+
+data class Numerar(val inicio: Int, val cifras: Int, val separador: String) : Regla {
+    override fun aplicar(base: String, indice: Int): String {
+        val numero = (inicio + indice).toString().padStart(cifras, '0')
+        return numero + separador + base
+    }
+}
+
+// Aplica las reglas en orden. La extensión (.mp3, .jpg, etc.) nunca se toca.
+fun aplicarReglas(nombre: String, reglas: List<Regla>, indice: Int): String {
+    val punto = nombre.lastIndexOf('.')
+    val extension = if (punto > 0) nombre.substring(punto) else ""
+    var base = if (punto > 0) nombre.substring(0, punto) else nombre
+
+    for (regla in reglas) {
+        base = regla.aplicar(base, indice)
+    }
+    return base + extension
+}
+
+// Devuelve los nombres nuevos que aparecen más de una vez.
+fun detectarConflictos(nombresNuevos: List<String>): Set<String> =
+    nombresNuevos.groupBy { it }.filter { it.value.size > 1 }.keys
